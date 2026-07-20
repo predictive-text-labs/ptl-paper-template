@@ -1,0 +1,41 @@
+# LaTeX build artifacts
+*.acn
+*.acr
+*.alg
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.glg
+*.glo
+*.gls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.nav
+*.nlo
+*.nls
+*.out
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+/paper.pdf
+
+# Editor and formatter artifacts
+*.bak
+*.swp
+*.swo
+*~
+__latexindent_temp_*.tex
+
+# Operating-system artifacts
+.DS_Store
+._*
+Thumbs.db

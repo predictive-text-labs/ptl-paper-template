@@ -1,0 +1,27 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "BibTeX",
+    "LaTeX",
+    "NeurIPS",
+    "pdflatex",
+    "SyncTeX"
+  ],
+  "patterns": [
+    {
+      "name": "LaTeX commands",
+      "pattern": "/\\\\[a-zA-Z]+/g"
+    },
+    {
+      "name": "Citations",
+      "pattern": "/\\\\cite[a-zA-Z]*\\{[^}]+\\}/g"
+    }
+  ],
+  "languageSettings": [
+    {
+      "languageId": "latex",
+      "patterns": ["LaTeX commands", "Citations"]
+    }
+  ]
+}

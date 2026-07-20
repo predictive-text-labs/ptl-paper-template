@@ -1,0 +1,89 @@
+# latexindent configuration for academic papers
+# This file controls how latexindent formats your LaTeX code
+
+defaultIndent: "  "  # Use 2 spaces for indentation
+
+# Indentation settings
+indentRules:
+    environments: 1
+    commands: 1
+    optionalArguments: 1
+    mandatoryArguments: 1
+    ifElseFi: 1
+    items: 1
+    specialBeginEnd: 1
+
+# Environment settings
+specialBeginEnd:
+    displayMath:
+        begin: '\\\['
+        end: '\\\]'
+        lookForThis: 1
+    inlineMath:
+        begin: '\$'
+        end: '\$'
+        lookForThis: 0
+    displayMathTeX:
+        begin: '\$\$'
+        end: '\$\$'
+        lookForThis: 1
+
+# Code block settings
+verbatimEnvironments:
+    verbatim: 1
+    lstlisting: 1
+    minted: 1
+    Verbatim: 1
+
+# Don't modify these environments
+noIndentBlock:
+    filecontents: 1
+    comment: 1
+    verbatim: 1
+    lstlisting: 1
+    minted: 1
+
+# Text wrapping settings
+textWrapOptions:
+    columns: 80
+    huge: overflow
+    tabular: 0
+    environments:
+        quotation: 0
+        quote: 0
+
+# Line breaking
+removeTrailingWhitespace:
+    beforeProcessing: 0
+    afterProcessing: 1
+
+# Preserve blank lines
+preserveBlankLines: 1
+maxNumberOfBlankLines: 2
+
+# Citation formatting
+lookForAlignDelims:
+    tabular:
+        delims: 1
+        alignDoubleBackSlash: 1
+        spacesBeforeDoubleBackSlash: 0
+    align:
+        delims: 1
+        alignDoubleBackSlash: 1
+        spacesBeforeDoubleBackSlash: 0
+    array:
+        delims: 1
+        alignDoubleBackSlash: 1
+        spacesBeforeDoubleBackSlash: 0
+
+# Command settings
+commandCodeBlocks:
+    roundParenthesesAllowed: 1
+    stringsAllowedBetweenArguments:
+        - 'then'
+        - 'else'
+    commandNameSpecial:
+        - 'pgfkeys'
+        - 'pgfplotsset'
+        - 'tcbset'
+        - 'sisetup'

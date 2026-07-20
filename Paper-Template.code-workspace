@@ -1,0 +1,13 @@
+{
+  "folders": [
+    {
+      "name": "Paper Template",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "latex-workshop.latex.autoBuild.run": "onSave",
+    "latex-workshop.view.pdf.viewer": "tab",
+    "latex-workshop.synctex.afterBuild.enabled": true
+  }
+}

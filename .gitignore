@@ -43,6 +43,7 @@ Thumbs.db
 # Secrets — never commit (Gemini AI Studio key lives here for this tool)
 .env
 .env.*
+!.env.template
 
 # Python tooling for rewrite_pipeline
 .venv/

@@ -39,3 +39,23 @@ __latexindent_temp_*.tex
 .DS_Store
 ._*
 Thumbs.db
+
+# Secrets — never commit (Gemini AI Studio key lives here for this tool)
+.env
+.env.*
+
+# Python tooling for rewrite_pipeline
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.ruff_cache/
+.pyrefly/
+.pytest_cache/
+**/.pytest_cache/
+
+# Rewrite pipeline sidecar output + run artifacts
+*.rewritten.tex
+*.rewritten.*
+rewrite_pipeline/run/

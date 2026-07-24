@@ -65,7 +65,7 @@ def _git_commit() -> str | None:
             check=False,
         )
         return out.stdout.strip() or None
-    except subprocess.SubprocessError, OSError:
+    except (subprocess.SubprocessError, OSError):
         return None
 
 
@@ -360,7 +360,7 @@ def _tex_dirty(tex: Path) -> bool:
             check=False,
         )
         return bool(out.stdout.strip())
-    except subprocess.SubprocessError, OSError:
+    except (subprocess.SubprocessError, OSError):
         return False
 
 

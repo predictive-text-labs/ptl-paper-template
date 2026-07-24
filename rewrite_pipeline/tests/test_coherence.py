@@ -92,6 +92,37 @@ def test_apply_fixes_allows_matching_tokens() -> None:
     assert len(applied) == 1 and not skipped
 
 
+def test_apply_fixes_rejects_forbidden_tokens() -> None:
+    # An introduced unescaped % comments out the rest of the line and no later
+    # gate counts % — the fix gate must be as strict as validate_rewrite.
+    text = "The result holds for all cases here now."
+    _, applied, skipped = apply_fixes(
+        text, [{"quote": "holds for all cases", "replacement": "holds % for all"}]
+    )
+    assert not applied and skipped[0].reason == "forbidden:'%'"
+    # The escaped literal \% is fine when preserved.
+    text2 = r"Roughly 50\% of runs fail here."
+    fixed, applied, skipped = apply_fixes(
+        text2, [{"quote": r"Roughly 50\% of runs", "replacement": r"Half (50\%) of runs"}]
+    )
+    assert len(applied) == 1 and not skipped
+    assert fixed == r"Half (50\%) of runs fail here."
+
+
+def test_apply_fixes_rejects_dollar_and_brace_changes() -> None:
+    # An UNPAIRED $ is invisible to the Class-A regex ($...$ spans), so the
+    # count gate is the only thing standing between it and the .tex.
+    text = "the value x grows here."
+    _, applied, skipped = apply_fixes(
+        text, [{"quote": "the value x grows", "replacement": "the value $x grows"}]
+    )
+    assert not applied and skipped[0].reason == "dollar_count_mismatch"
+    _, applied, skipped = apply_fixes(
+        text, [{"quote": "the value x grows", "replacement": "the {value x grows"}]
+    )
+    assert not applied and skipped[0].reason == "brace_imbalance"
+
+
 def test_apply_fixes_skips_multiline_and_noop() -> None:
     text = "a sentence here."
     _, applied, skipped = apply_fixes(

@@ -17,28 +17,47 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .model import Manifest, Record
+from .model import Manifest, Record, count_unescaped
+from .scanner import STYLE_CMDS
 
 _TERM = frozenset(".?!")
 _CLOSERS = frozenset(")]\"'") | {"”", "’", "»"}
-_FORBIDDEN = ("\n", "\\[", "\\]", "\\begin", "\\end{", "\\item", "%")
+_FORBIDDEN = ("\n", "\\[", "\\]", "\\begin", "\\end{", "\\item")
 
 # CLASS-A immutable tokens: their multiset must be identical between the original
-# and the rewrite, else a citation / reference / math span was silently dropped
-# or mangled. Whitespace inside a token is normalised, so reflowing $D=M+L$ into
-# $D = M + L$ still passes (render-identical), but changing the math fails.
+# and the rewrite, else a citation / reference / math span / macro invocation was
+# silently dropped or mangled. EVERY command with its argument groups is
+# immutable — a project macro like \gls{latency-error} resolves a defined term,
+# so retargeting or dropping it changes content while still compiling — except
+# the known prose wrappers (STYLE_CMDS: \emph, \textbf, ...), whose braced text
+# is exactly what a rewrite is allowed to rephrase. Whitespace inside a token is
+# normalised, so reflowing $D=M+L$ into $D = M + L$ still passes
+# (render-identical), but changing the math fails.
 _CLASS_A = re.compile(
     r"\$[^$]*\$"
     r"|\\\[[\s\S]*?\\\]"
     r"|\\\([\s\S]*?\\\)"
-    r"|\\(?:ref|eqref|pageref|autoref|cref|Cref|citep|citet|cite|citealp|citealt"
-    r"|citeauthor|citeyear|label|url|href|S)\b(?:\{[^}]*\}|\[[^\]]*\])*"
-    r"|\\[%$&_#]"
+    r"|\\(?!(?:" + "|".join(sorted(STYLE_CMDS)) + r")\b)"
+    r"[A-Za-z]+\*?(?:\{[^}]*\}|\[[^\]]*\])*"
+    r"|\\[%$&_#{}]"
 )
 
 
 def _class_a_tokens(s: str) -> list[str]:
     return sorted(re.sub(r"\s+", "", t) for t in _CLASS_A.findall(s))
+
+
+def _forbidden_token(s: str) -> str | None:
+    """The reason a candidate text may never be spliced in, or None.
+
+    An unescaped ``%`` would comment out the rest of the source line; the
+    escaped literal ``\\%`` is fine (and Class-A guarded)."""
+    for bad in _FORBIDDEN:
+        if bad in s:
+            return f"forbidden:{bad!r}"
+    if count_unescaped(s, "%"):
+        return "forbidden:'%'"
+    return None
 
 
 @dataclass
@@ -54,20 +73,6 @@ class Applied:
 class Skipped:
     id: str
     reason: str
-
-
-def _count_unescaped(t: str, ch: str) -> int:
-    cnt = 0
-    k = 0
-    n = len(t)
-    while k < n:
-        if t[k] == "\\":
-            k += 2
-            continue
-        if t[k] == ch:
-            cnt += 1
-        k += 1
-    return cnt
 
 
 def _ends_terminal(s: str) -> bool:
@@ -99,12 +104,12 @@ def validate_rewrite(
     rw = rewrite.strip()
     if not rw:
         return None, "empty"
-    for bad in _FORBIDDEN:
-        if bad in rw:
-            return None, f"forbidden:{bad!r}"
-    if _count_unescaped(rw, "$") != rec.n_dollars:
+    reason = _forbidden_token(rw)
+    if reason:
+        return None, reason
+    if count_unescaped(rw, "$") != rec.n_dollars:
         return None, "dollar_count_mismatch"
-    if _count_unescaped(rw, "{") - _count_unescaped(rw, "}") != 0:
+    if count_unescaped(rw, "{") - count_unescaped(rw, "}") != 0:
         return None, "brace_imbalance"
     if _class_a_tokens(rw) != _class_a_tokens(original):
         return None, "latex_token_drift"
@@ -128,12 +133,19 @@ def apply_rewrites(
         tuple[int, int, str, str, str]
     ] = []  # (start, end, rewrite, id, original)
     skipped: list[Skipped] = []
+    seen: set[str] = set()
 
     for item in accepted:
         rid = item.get("id")
         rw_in = item.get("rewrite") or item.get("final_rewrite")
         if not rid or rw_in is None:
             skipped.append(Skipped(str(rid), "missing_id_or_rewrite"))
+            continue
+        # A repeated id would splice the same span twice — the second pass cuts
+        # into the first rewrite's text — so only the first VALID occurrence
+        # counts (ids are marked seen below, after validation).
+        if rid in seen:
+            skipped.append(Skipped(rid, "duplicate_id"))
             continue
         rec = by_id.get(rid)
         if rec is None:
@@ -146,6 +158,7 @@ def apply_rewrites(
         if err or rw is None:
             skipped.append(Skipped(rid, err or "invalid"))
             continue
+        seen.add(rid)
         edits.append((rec.abs_start, rec.abs_end, rw, rid, rec.text))
 
     # Descending offset so earlier splices don't shift later (higher) offsets.

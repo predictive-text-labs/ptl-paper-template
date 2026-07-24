@@ -83,6 +83,21 @@ def sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def count_unescaped(text: str, ch: str) -> int:
+    """Count occurrences of ``ch`` not preceded by a backslash escape."""
+    cnt = 0
+    k = 0
+    n = len(text)
+    while k < n:
+        if text[k] == "\\":
+            k += 2
+            continue
+        if text[k] == ch:
+            cnt += 1
+        k += 1
+    return cnt
+
+
 def make_id(ordinal: int, text: str) -> str:
     """Stable, human-scannable id: ``0007-1a2b3c4d`` (ordinal + content hash)."""
     digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]

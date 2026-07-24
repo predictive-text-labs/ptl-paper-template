@@ -424,23 +424,65 @@ def _open_special(text, visible, stack, after_name, kind, level, cmd_start) -> i
     return after
 
 
-def _skip_opaque_env(text: str, visible: bytearray, env: str, start: int) -> int:
+# Inside these, % is a literal character, not a comment — TeX recognises the
+# \end token even on a % line, so their spans must NOT be comment-aware.
+_VERBATIM_ENVS: frozenset[str] = frozenset({"verbatim", "Verbatim", "lstlisting", "minted"})
+
+
+def _commented(text: str, pos: int) -> bool:
+    """True if ``pos`` is preceded on its line by an unescaped ``%``."""
+    k = text.rfind("\n", 0, pos) + 1
+    while k < pos:
+        if text[k] == "\\":
+            k += 2
+            continue
+        if text[k] == "%":
+            return True
+        k += 1
+    return False
+
+
+def _find_active(text: str, tok: str, start: int, comment_aware: bool) -> int:
+    """``text.find`` that (when comment-aware) skips matches on commented text."""
+    idx = text.find(tok, start)
+    while comment_aware and idx != -1 and _commented(text, idx):
+        idx = text.find(tok, idx + 1)
+    return idx
+
+
+def _scan_env_end(
+    text: str, begin_tok: str, end_tok: str, start: int, aware: bool
+) -> int | None:
+    """Index just past the matching end token, or None if never closed."""
     n = len(text)
-    begin_tok = "\\begin{" + env + "}"
-    end_tok = "\\end{" + env + "}"
     depth = 1
     k = start
     while k < n and depth > 0:
-        nb = text.find(begin_tok, k)
-        ne = text.find(end_tok, k)
+        nb = _find_active(text, begin_tok, k, aware)
+        ne = _find_active(text, end_tok, k, aware)
         if ne == -1:
-            k = n
-            break
+            return None
         if nb != -1 and nb < ne:
             depth += 1
             k = nb + len(begin_tok)
         else:
             depth -= 1
             k = ne + len(end_tok)
+    return k
+
+
+def _skip_opaque_env(text: str, visible: bytearray, env: str, start: int) -> int:
+    begin_tok = "\\begin{" + env + "}"
+    end_tok = "\\end{" + env + "}"
+    aware = env not in _VERBATIM_ENVS
+    k = _scan_env_end(text, begin_tok, end_tok, start, aware)
+    if k is None and aware:
+        # Every end token sat after a % on its line. A literal percent
+        # (\verb|%|, \url{..%..}) is far likelier than a document whose SOLE
+        # \end is commented out (that would not compile), so degrade to the
+        # comment-blind match rather than masking to end-of-file.
+        k = _scan_env_end(text, begin_tok, end_tok, start, False)
+    if k is None:
+        k = len(text)
     _mask(visible, start, k)
     return k

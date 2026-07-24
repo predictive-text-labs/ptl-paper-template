@@ -15,7 +15,14 @@ from __future__ import annotations
 import bisect
 import re
 
-from .model import EXTRACTOR_VERSION, Manifest, Record, make_id, sha256_hex
+from .model import (
+    EXTRACTOR_VERSION,
+    Manifest,
+    Record,
+    count_unescaped,
+    make_id,
+    sha256_hex,
+)
 from .scanner import scan as scan_text
 
 _SPACE = frozenset(" \t\r\n\f\v~")
@@ -170,20 +177,6 @@ def _ends_terminal(text: str, s: int, e: int) -> bool:
     while k > s and text[k - 1] in _CLOSERS:
         k -= 1
     return k > s and text[k - 1] in _TERM
-
-
-def _count_unescaped(t: str, ch: str) -> int:
-    cnt = 0
-    k = 0
-    n = len(t)
-    while k < n:
-        if t[k] == "\\":
-            k += 2
-            continue
-        if t[k] == ch:
-            cnt += 1
-        k += 1
-    return cnt
 
 
 def _segment(
@@ -384,8 +377,8 @@ def extract(
     records: list[Record] = []
     for ordinal, (s, e, ht, kind) in enumerate(spans):
         t = text[s:e]
-        n_dollars = _count_unescaped(t, "$")
-        n_brace = _count_unescaped(t, "{") - _count_unescaped(t, "}")
+        n_dollars = count_unescaped(t, "$")
+        n_brace = count_unescaped(t, "{") - count_unescaped(t, "}")
         contains_footnote = kind != "footnote" and any(
             s < fe and fs < e for fs, fe in footnote_spans
         )

@@ -110,11 +110,56 @@ def test_section_title_not_a_sentence():
     assert "A real sentence here." in texts
 
 
+def test_commented_end_inside_opaque_env_is_ignored():
+    # A commented-out % \end{tabular} must not terminate the masked span early,
+    # or the rest of the table leaks into prose. The leaked line is terminal-
+    # punctuated so it would land IN SCOPE if the mask ended early.
+    body = (
+        "Before text goes here now.\n\n"
+        "\\begin{tabular}{ll}\n"
+        "a & b \\\\\n"
+        "% \\end{tabular}\n"
+        "This row would leak badly here now.\n"
+        "\\end{tabular}\n\n"
+        "After text goes here now. Next one here."
+    )
+    man = extract(wrap(body))
+    texts = [r.text for r in man.records if r.in_scope]
+    assert "Before text goes here now." in texts
+    assert "After text goes here now." in texts
+    assert not any("leak badly" in t for t in texts)
+
+
+def test_literal_percent_in_verb_does_not_hide_env_end():
+    # \verb|%| is a literal percent, not a comment: the comment-aware scan finds
+    # no end token at all and must degrade to the blind match instead of
+    # masking the rest of the document.
+    body = (
+        "\\begin{tabular}{ll}\n"
+        "a & \\verb|%| b \\end{tabular}\n\n"
+        "After text goes here now. Next one here."
+    )
+    man = extract(wrap(body))
+    texts = [r.text for r in man.records if r.in_scope]
+    assert "After text goes here now." in texts
+
+
+def test_verbatim_commented_end_still_closes():
+    # Inside verbatim, % is a literal character, so TeX ends the environment at
+    # the \end token even on a % line — the scanner must match that.
+    body = "\\begin{verbatim}\n% \\end{verbatim}\nAfter text goes here now. Next one here."
+    man = extract(wrap(body))
+    texts = [r.text for r in man.records if r.in_scope]
+    assert "After text goes here now." in texts
+
+
 # ---- round-trip on whatever paper the repo holds ----
 
 
 def test_repo_paper_roundtrip_and_scope():
-    for tex in sorted(REPO_ROOT.glob("*.tex")):
+    tex_files = sorted(REPO_ROOT.glob("*.tex"))
+    assert tex_files, "no top-level .tex manuscript found — round-trip covered nothing"
+    for tex in tex_files:
         text = tex.read_text(encoding="utf-8")
         man = extract(text, file_path=str(tex))
         # every record's text is exactly its source span

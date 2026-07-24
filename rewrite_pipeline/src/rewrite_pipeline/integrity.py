@@ -7,19 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-
-def _count_unescaped(t: str, ch: str) -> int:
-    cnt = 0
-    k = 0
-    n = len(t)
-    while k < n:
-        if t[k] == "\\":
-            k += 2
-            continue
-        if t[k] == ch:
-            cnt += 1
-        k += 1
-    return cnt
+from .model import count_unescaped
 
 
 def _blank_line_count(t: str) -> int:
@@ -33,9 +21,9 @@ def structural_diff(old: str, new: str) -> list[str]:
     these invariants must hold (line *count* is allowed to shrink when a
     multi-line sentence collapses — a newline is just whitespace in LaTeX)."""
     problems: list[str] = []
-    if _count_unescaped(new, "$") % 2 != 0:
-        problems.append(f"unbalanced $ (count={_count_unescaped(new, '$')})")
-    delta = _count_unescaped(new, "{") - _count_unescaped(new, "}")
+    if count_unescaped(new, "$") % 2 != 0:
+        problems.append(f"unbalanced $ (count={count_unescaped(new, '$')})")
+    delta = count_unescaped(new, "{") - count_unescaped(new, "}")
     if delta != 0:
         problems.append(f"brace imbalance (delta={delta})")
     for tok in ("\\begin{", "\\end{", "\\[", "\\]"):
@@ -54,7 +42,6 @@ def compile_check(tex_path: Path, outdir: Path) -> tuple[bool, str]:
     latexmk = shutil.which("latexmk")
     if latexmk is None:
         return False, "latexmk not found on PATH"
-    outdir.mkdir(parents=True, exist_ok=True)
     cmd = [
         latexmk,
         "-pdf",
@@ -63,18 +50,37 @@ def compile_check(tex_path: Path, outdir: Path) -> tuple[bool, str]:
         f"-outdir={outdir}",
         str(tex_path),
     ]
-    proc = subprocess.run(
-        cmd,
-        cwd=str(tex_path.parent),
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
-    )
+    # A raise here would escape cmd_apply AFTER it has written the rewritten
+    # .tex, skipping its revert-on-failure — so every failure mode must come
+    # back as (False, log). Output is captured as bytes: pdftex logs echo raw
+    # source/package bytes and are not reliably UTF-8, and text=True would
+    # raise UnicodeDecodeError exactly on the broken-compile case.
+    try:
+        outdir.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(tex_path.parent),
+            capture_output=True,
+            timeout=600,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        partial = _decode(e.stdout) + "\n" + _decode(e.stderr)
+        return False, f"latexmk timed out after {int(e.timeout)}s\n" + _tail(partial)
+    except OSError as e:
+        return False, f"latexmk failed to start: {e}"
     ok = proc.returncode == 0
-    log = proc.stdout + "\n" + proc.stderr
-    tail = "\n".join(log.splitlines()[-40:])
-    return ok, tail
+    return ok, _tail(_decode(proc.stdout) + "\n" + _decode(proc.stderr))
+
+
+def _tail(log: str) -> str:
+    return "\n".join(log.splitlines()[-40:])
+
+
+def _decode(out: str | bytes | None) -> str:
+    if isinstance(out, bytes):
+        return out.decode("utf-8", "replace")
+    return out or ""
 
 
 def pdf_page_count(pdf_path: Path) -> int | None:
@@ -90,7 +96,7 @@ def pdf_page_count(pdf_path: Path) -> int | None:
             timeout=60,
             check=False,
         )
-    except subprocess.SubprocessError, OSError:
+    except (subprocess.SubprocessError, OSError):
         return None
     m = re.search(r"^Pages:\s+(\d+)", proc.stdout, re.MULTILINE)
     return int(m.group(1)) if m else None

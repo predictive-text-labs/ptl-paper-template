@@ -30,9 +30,9 @@ from .model import Manifest, Record
 
 PROMPT_TEMPLATE = (
     "Can the below be rewritten to lower cognitive complexity when reading "
-    "**using less words**? If so, give me a rewrite. Prefer directness and "
-    "fluidity — smooth, easy reading — over maximal leanness. Keep every "
-    "defined term, hedge, quantifier, citation, and math exactly as written. "
+    "**using less words**? If so, give me a rewrite. Prefer directness. Keep "
+    "every defined term, hedge, quantifier, citation, and math exactly as "
+    "written. "
     "The sentence sits in a paragraph you cannot see, and its neighbours may "
     'lean on its exact wording — an elided verb ("...still do"), an '
     'enumeration label ("(i)--(iv)"), its subject\'s number — so keep the '

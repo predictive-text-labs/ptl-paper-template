@@ -15,7 +15,9 @@ sweep that catches those breaks:
     can differ.
   * ``apply_fixes`` applies the sweep's verbatim substring fixes with the same
     safety posture as ``reinsert``: the quote must match the text exactly once,
-    no newlines, and the Class-A LaTeX token multiset must be preserved.
+    no newlines or forbidden LaTeX tokens (block structures, comment ``%``),
+    unescaped ``$``/brace counts unchanged, and the Class-A LaTeX token
+    multiset preserved.
   * ``accepted_fingerprint`` ties pair files and fixes to the exact accepted
     set, so a stale sign-off can never gate a different apply.
 """
@@ -28,7 +30,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .reinsert import _class_a_tokens
+from .model import count_unescaped
+from .reinsert import _class_a_tokens, _forbidden_token
 
 _PARA_SPLIT = re.compile(r"\n[ \t]*\n")
 
@@ -89,7 +92,10 @@ def apply_fixes(
 
     Each fix ``{quote, replacement}`` is applied only if the quote occurs
     exactly once in the current text (never fuzzy-matched, never ambiguous),
-    introduces no newline, and preserves the Class-A LaTeX token multiset.
+    introduces no newline and no forbidden LaTeX token (an unescaped ``%``
+    would comment out the rest of the line and no later gate counts those),
+    keeps the unescaped ``$`` and brace counts, and preserves the Class-A
+    LaTeX token multiset.
     """
     applied: list[FixApplied] = []
     skipped: list[FixSkipped] = []
@@ -104,6 +110,18 @@ def apply_fixes(
             continue
         if repl == quote:
             skipped.append(FixSkipped(quote, "noop"))
+            continue
+        reason = _forbidden_token(repl)
+        if reason:
+            skipped.append(FixSkipped(quote, reason))
+            continue
+        if count_unescaped(repl, "$") != count_unescaped(quote, "$"):
+            skipped.append(FixSkipped(quote, "dollar_count_mismatch"))
+            continue
+        if (count_unescaped(repl, "{") - count_unescaped(repl, "}")) != (
+            count_unescaped(quote, "{") - count_unescaped(quote, "}")
+        ):
+            skipped.append(FixSkipped(quote, "brace_imbalance"))
             continue
         n = text.count(quote)
         if n == 0:

@@ -14,8 +14,9 @@ stagger, no semaphore. Only two things are load-bearing:
     that (there is no error); the timeout is what turns a hang into a retry.
   * infinite retry on any error (a stall is random per-connection, so a retry on
     a fresh socket almost always works), with a bounded give-up on repeated
-    timeouts so one cursed sentence can't stall the whole run. 400/403/404 are
-    terminal (bad request / auth / missing model).
+    timeouts so one cursed sentence can't stall the whole run. 400/401/403/404
+    are terminal (bad request / auth / missing model — never transient, so a
+    retry loop would hang every worker).
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ PROMPT_TEMPLATE = (
 )
 
 MODEL = "gemini-3.1-pro-preview"
-TERMINAL_CODES = frozenset({400, 403, 404})
+TERMINAL_CODES = frozenset({400, 401, 403, 404})
 # A single call is aborted after this long. Legit high-thinking calls run up to
 # ~55s under load, so this is generous headroom — anything longer is a stall.
 REQUEST_TIMEOUT_S = 120.0

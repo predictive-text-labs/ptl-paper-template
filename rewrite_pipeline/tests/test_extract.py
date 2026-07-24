@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rewrite_pipeline.extract import extract
 
-REPO_TEX = Path(__file__).resolve().parents[2] / "Is_It_Priced_In.tex"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def wrap(body: str) -> str:
@@ -110,22 +110,21 @@ def test_section_title_not_a_sentence():
     assert "A real sentence here." in texts
 
 
-# ---- round-trip on the real manuscript ----
+# ---- round-trip on whatever paper the repo holds ----
 
 
-def test_real_paper_roundtrip_and_scope():
-    if not REPO_TEX.exists():
-        return
-    text = REPO_TEX.read_text(encoding="utf-8")
-    man = extract(text, file_path=str(REPO_TEX))
-    # every record's text is exactly its source span
-    for r in man.records:
-        assert text[r.abs_start : r.abs_end] == r.text
-    ap = text.find("\\appendix")
-    for r in man.records:
-        if r.in_scope:
-            assert r.abs_start < ap  # no in-scope sentence past the appendix
-            assert r.n_dollars % 2 == 0
-            assert r.n_brace_delta == 0
-            assert r.has_terminal
-    assert len([r for r in man.records if r.in_scope]) > 150
+def test_repo_paper_roundtrip_and_scope():
+    for tex in sorted(REPO_ROOT.glob("*.tex")):
+        text = tex.read_text(encoding="utf-8")
+        man = extract(text, file_path=str(tex))
+        # every record's text is exactly its source span
+        for r in man.records:
+            assert text[r.abs_start : r.abs_end] == r.text
+        ap = text.find("\\appendix")
+        for r in man.records:
+            if r.in_scope:
+                if ap != -1:
+                    assert r.abs_start < ap  # no in-scope sentence past the appendix
+                assert r.n_dollars % 2 == 0
+                assert r.n_brace_delta == 0
+                assert r.has_terminal

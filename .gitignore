@@ -56,6 +56,6 @@ __pycache__/
 **/.pytest_cache/
 
 # Rewrite pipeline sidecar output + run artifacts
-Is_It_Priced_In.rewritten.tex
-Is_It_Priced_In.rewritten.*
+*.rewritten.tex
+*.rewritten.*
 rewrite_pipeline/run/

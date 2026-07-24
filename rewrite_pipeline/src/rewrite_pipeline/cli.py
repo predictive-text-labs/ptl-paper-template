@@ -35,8 +35,23 @@ from .review import build_review_html
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = PACKAGE_DIR.parents[1]  # rewrite_pipeline/
 REPO_ROOT = PROJECT_DIR.parent
-DEFAULT_TEX = REPO_ROOT / "Is_It_Priced_In.tex"
 DEFAULT_WORKDIR = PROJECT_DIR / "run"
+
+
+def _default_tex() -> str | None:
+    """The repo's paper: the sole top-level .tex file, if unambiguous."""
+    texes = sorted(REPO_ROOT.glob("*.tex"))
+    return str(texes[0]) if len(texes) == 1 else None
+
+
+def _add_tex_arg(sub: argparse.ArgumentParser) -> None:
+    default = _default_tex()
+    sub.add_argument(
+        "--tex",
+        default=default,
+        required=default is None,
+        help="paper .tex (default: the repo's sole top-level .tex)",
+    )
 
 
 def _git_commit() -> str | None:
@@ -329,7 +344,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         f"  compiled OK ({'pages=' + str(pages) if pages else 'page count unknown'})."
     )
     print(
-        "  review `git diff Is_It_Priced_In.tex`; revert with `git checkout -- Is_It_Priced_In.tex`."
+        f"  review `git diff {tex.name}`; revert with `git checkout -- {tex.name}`."
     )
     return 0
 
@@ -355,7 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pe = sub.add_parser("extract", help="split the paper into a sentence manifest")
-    pe.add_argument("--tex", default=str(DEFAULT_TEX))
+    _add_tex_arg(pe)
     pe.set_defaults(func=cmd_extract)
 
     pf = sub.add_parser(
@@ -379,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp = sub.add_parser(
         "pairs", help="build changed-paragraph pair files for the coherence sweep"
     )
-    pp.add_argument("--tex", default=str(DEFAULT_TEX))
+    _add_tex_arg(pp)
     pp.add_argument(
         "--accepted",
         default=None,
@@ -388,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp.set_defaults(func=cmd_pairs)
 
     pa = sub.add_parser("apply", help="splice accepted rewrites (dry-run by default)")
-    pa.add_argument("--tex", default=str(DEFAULT_TEX))
+    _add_tex_arg(pa)
     pa.add_argument(
         "--accepted",
         default=None,

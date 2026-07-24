@@ -1,6 +1,8 @@
 # rewrite_pipeline
 
-Shortens the sentences of `Is_It_Priced_In.tex` to lower reading complexity.
+Shortens the sentences of the repo's paper — auto-detected as the sole
+top-level `.tex` (here `paper.tex`); pass `--tex` if there are several — to
+lower reading complexity.
 Gemini proposes shorter rewrites; **Claude Fable** answers one question per
 rewrite — *does it keep all the important details of the original?* — and keeps
 it on yes; a second Fable sweep re-reads every changed paragraph whole for
@@ -88,14 +90,14 @@ different apply.
 uv run rewrite apply             # dry run: sidecar + unified diff + review.html
 uv run rewrite apply --apply     # writes the .tex, runs the latexmk compile gate
 ```
-Dry run changes nothing — it writes `Is_It_Priced_In.rewritten.tex`,
+Dry run changes nothing — it writes `<paper>.rewritten.tex`,
 `run/rewrite.diff`, and `run/review.html` (side-by-side, word-count deltas).
 `--apply` requires a fresh coherence sign-off (`--skip-coherence` to override),
 refuses on a dirty `.tex` (commit/stash first, or `--force`), then splices in
 descending-offset order — sentence rewrites first, then coherence fixes, each
 of which must match the text exactly once and preserve Class-A LaTeX tokens —
 and compiles; on any compile failure it reverts. Revert manually with
-`git checkout -- Is_It_Priced_In.tex`.
+`git checkout -- <paper>.tex`.
 
 ## Safety model
 

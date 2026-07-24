@@ -11,7 +11,11 @@ from rewrite_pipeline.reinsert import apply_rewrites, validate_rewrite
 
 
 def wrap(body: str) -> str:
-    return "\\documentclass{article}\n\\begin{document}\n\n" + body + "\n\n\\end{document}\n"
+    return (
+        "\\documentclass{article}\n\\begin{document}\n\n"
+        + body
+        + "\n\n\\end{document}\n"
+    )
 
 
 def _record(text: str, substr: str):
@@ -82,7 +86,9 @@ def test_apply_skips_offset_mismatch():
         extractor_version=man.extractor_version,
         records=[replace(rec, text=rec.text + "X")],
     )
-    _, applied, skipped = apply_rewrites(text, bad, [{"id": rec.id, "rewrite": "Short one."}])
+    _, applied, skipped = apply_rewrites(
+        text, bad, [{"id": rec.id, "rewrite": "Short one."}]
+    )
     assert not applied
     assert skipped and skipped[0].reason == "offset_mismatch"
 

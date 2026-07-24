@@ -4,11 +4,16 @@ Stages:
   extract  paper.tex           -> <workdir>/sentence_index.json   (manifest)
   fanout   manifest            -> <workdir>/gemini_out.json        (Gemini raw)
   split    gemini_out.json     -> <workdir>/judge_batches/*.json   (one pair/file)
+  pairs    manifest + accepted -> <workdir>/coherence_pairs/*.json (changed paras)
   apply    manifest + accepted -> sidecar + diff + review.html  (--apply to commit)
 
-The Claude Fable judging step (Stage B) runs separately via the Workflow tool over
-the batch files from ``split`` and produces ``<workdir>/accepted.json``, which
-``apply`` consumes.
+Two Claude Fable steps run separately via the Workflow tool:
+  * judge (judge-rewrites.workflow.mjs) over the ``split`` batch files ->
+    ``<workdir>/accepted.json``;
+  * coherence sweep (coherence-sweep.workflow.mjs) over the ``pairs`` files ->
+    ``<workdir>/coherence_fixes.json``. Per-sentence judging cannot see seam
+    damage in neighbouring sentences, so ``apply --apply`` requires this
+    sign-off (fresh for the current accepted set) unless --skip-coherence.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .coherence import accepted_fingerprint, apply_fixes, build_pairs, load_fixes
 from .extract import extract
 from .integrity import compile_check, pdf_page_count, structural_diff
 from .model import Manifest, sha256_hex
@@ -44,7 +50,7 @@ def _git_commit() -> str | None:
             check=False,
         )
         return out.stdout.strip() or None
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
 
 
@@ -100,7 +106,9 @@ def cmd_split(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir)
     gemini_out = json.loads((workdir / "gemini_out.json").read_text(encoding="utf-8"))
     candidates = [
-        r for r in gemini_out if r.get("status") == "ok" and r.get("gemini_raw_response")
+        r
+        for r in gemini_out
+        if r.get("status") == "ok" and r.get("gemini_raw_response")
     ]
     outdir = workdir / "judge_batches"
     if outdir.exists():
@@ -142,6 +150,59 @@ def _load_accepted(path: Path) -> list[dict]:
     return data
 
 
+def cmd_pairs(args: argparse.Namespace) -> int:
+    """Build coherence pair files: every paragraph the accepted set would change.
+
+    Per-sentence judging cannot see that a rewrite orphaned a pro-verb,
+    demonstrative, or enumeration label in a NEIGHBOURING sentence, so the
+    coherence-sweep workflow re-reads each changed paragraph whole. This stage
+    prepares its inputs from a virtual apply (nothing is written to the .tex).
+    """
+    tex = Path(args.tex)
+    workdir = Path(args.workdir)
+    man = Manifest.from_json(_manifest_path(workdir).read_text(encoding="utf-8"))
+    text = tex.read_text(encoding="utf-8")
+    if sha256_hex(text) != man.file_sha256:
+        print(
+            "ABORT: file has changed since extraction (sha256 mismatch). Re-run extract."
+        )
+        return 2
+
+    accepted_path = Path(args.accepted) if args.accepted else workdir / "accepted.json"
+    accepted = _load_accepted(accepted_path)
+    new_text, applied, _skipped = apply_rewrites(text, man, accepted)
+    pairs = build_pairs(text, new_text)
+
+    outdir = workdir / "coherence_pairs"
+    if outdir.exists():
+        for f in outdir.glob("pair_*.json"):
+            f.unlink()
+    outdir.mkdir(parents=True, exist_ok=True)
+    for i, pair in enumerate(pairs):
+        (outdir / f"pair_{i:03d}.json").write_text(
+            json.dumps(pair, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+
+    fingerprint = accepted_fingerprint(accepted)
+    manifest = {
+        "pair_dir": str(outdir.resolve()),
+        "pair_count": len(pairs),
+        "accepted_sha256": fingerprint,
+        "tex_sha256": man.file_sha256,
+    }
+    (workdir / "coherence_pairs.json").write_text(
+        json.dumps(manifest, indent=1), encoding="utf-8"
+    )
+    print(
+        f"pairs: {len(applied)} accepted rewrites touch {len(pairs)} paragraphs "
+        f"-> {outdir}"
+    )
+    print("  run coherence-sweep.workflow.mjs with args:")
+    print(f"  {json.dumps(manifest)}")
+    print(f"  then save its full return value to {workdir / 'coherence_fixes.json'}")
+    return 0
+
+
 def cmd_apply(args: argparse.Namespace) -> int:
     tex = Path(args.tex)
     workdir = Path(args.workdir)
@@ -164,6 +225,43 @@ def cmd_apply(args: argparse.Namespace) -> int:
         rejected = rd.get("rejected", rd) if isinstance(rd, dict) else rd
 
     new_text, applied, skipped = apply_rewrites(text, man, accepted)
+
+    # Coherence gate: per-sentence judging cannot see seam damage in the
+    # neighbouring sentences, so --apply requires a sweep sign-off (a
+    # coherence_fixes.json fingerprinted to THIS accepted set) unless
+    # --skip-coherence. An empty fixes list is a valid all-clear.
+    fixes_path = workdir / "coherence_fixes.json"
+    fingerprint = accepted_fingerprint(accepted)
+    fixes: list[dict] = []
+    fixes_fp: str | None = None
+    if fixes_path.exists():
+        fixes, fixes_fp = load_fixes(fixes_path)
+    coherence_ok = fixes_fp == fingerprint
+    if not coherence_ok:
+        why = (
+            "is stale (accepted.json changed since the sweep)"
+            if fixes_path.exists()
+            else "is missing"
+        )
+        howto = (
+            f"coherence sign-off {why}: run `rewrite pairs`, then the "
+            "coherence-sweep workflow, and save its return value to "
+            f"{fixes_path}"
+        )
+        if args.apply and not args.skip_coherence:
+            print(f"ABORT: {howto} (or pass --skip-coherence).")
+            return 6
+        print(f"  WARNING: {howto}")
+        fixes = []
+
+    fx_applied, fx_skipped = [], []
+    if fixes:
+        new_text, fx_applied, fx_skipped = apply_fixes(new_text, fixes)
+        for fx in fx_applied:
+            print(f"  coherence fix: {fx.quote!r} -> {fx.replacement!r}")
+        for fs in fx_skipped:
+            print(f"  coherence fix SKIPPED ({fs.reason}): {fs.quote!r}")
+
     problems = structural_diff(text, new_text)
 
     print(
@@ -183,6 +281,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         "applied": len(applied),
         "skipped": len(skipped),
         "rejected": len(rejected),
+        "coherence_fixes": len(fx_applied),
     }
 
     # Always write the dry-run artifacts.
@@ -246,7 +345,7 @@ def _tex_dirty(tex: Path) -> bool:
             check=False,
         )
         return bool(out.stdout.strip())
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return False
 
 
@@ -259,12 +358,16 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--tex", default=str(DEFAULT_TEX))
     pe.set_defaults(func=cmd_extract)
 
-    pf = sub.add_parser("fanout", help="send in-scope sentences to Gemini (all at once)")
+    pf = sub.add_parser(
+        "fanout", help="send in-scope sentences to Gemini (all at once)"
+    )
     pf.add_argument("--model", default="gemini-3.1-pro-preview")
     pf.add_argument("--env", default=None, help="path to .env (default: search upward)")
     pf.set_defaults(func=cmd_fanout)
 
-    ps = sub.add_parser("split", help="split gemini_out.json into per-judge batch files")
+    ps = sub.add_parser(
+        "split", help="split gemini_out.json into per-judge batch files"
+    )
     ps.add_argument(
         "--batch-size",
         type=int,
@@ -272,6 +375,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="sentences per judge agent (default 1 = one judge per sentence pair)",
     )
     ps.set_defaults(func=cmd_split)
+
+    pp = sub.add_parser(
+        "pairs", help="build changed-paragraph pair files for the coherence sweep"
+    )
+    pp.add_argument("--tex", default=str(DEFAULT_TEX))
+    pp.add_argument(
+        "--accepted",
+        default=None,
+        help="accepted.json (default: <workdir>/accepted.json)",
+    )
+    pp.set_defaults(func=cmd_pairs)
 
     pa = sub.add_parser("apply", help="splice accepted rewrites (dry-run by default)")
     pa.add_argument("--tex", default=str(DEFAULT_TEX))
@@ -285,6 +399,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pa.add_argument(
         "--force", action="store_true", help="allow --apply on a dirty .tex"
+    )
+    pa.add_argument(
+        "--skip-coherence",
+        action="store_true",
+        help="allow --apply without a fresh coherence-sweep sign-off",
     )
     pa.set_defaults(func=cmd_apply)
     return p

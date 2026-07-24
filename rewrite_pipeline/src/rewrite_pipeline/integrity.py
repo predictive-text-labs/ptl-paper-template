@@ -64,7 +64,12 @@ def compile_check(tex_path: Path, outdir: Path) -> tuple[bool, str]:
         str(tex_path),
     ]
     proc = subprocess.run(
-        cmd, cwd=str(tex_path.parent), capture_output=True, text=True, timeout=600, check=False
+        cmd,
+        cwd=str(tex_path.parent),
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
     )
     ok = proc.returncode == 0
     log = proc.stdout + "\n" + proc.stderr
@@ -79,9 +84,13 @@ def pdf_page_count(pdf_path: Path) -> int | None:
         return None
     try:
         proc = subprocess.run(
-            [pdfinfo, str(pdf_path)], capture_output=True, text=True, timeout=60, check=False
+            [pdfinfo, str(pdf_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
         )
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
     m = re.search(r"^Pages:\s+(\d+)", proc.stdout, re.MULTILINE)
     return int(m.group(1)) if m else None

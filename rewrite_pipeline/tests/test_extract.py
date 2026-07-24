@@ -10,7 +10,11 @@ REPO_TEX = Path(__file__).resolve().parents[2] / "Is_It_Priced_In.tex"
 
 
 def wrap(body: str) -> str:
-    return "\\documentclass{article}\n\\begin{document}\n\n" + body + "\n\n\\end{document}\n"
+    return (
+        "\\documentclass{article}\n\\begin{document}\n\n"
+        + body
+        + "\n\n\\end{document}\n"
+    )
 
 
 def sentences(body: str, in_scope_only: bool = True) -> list[str]:
@@ -76,7 +80,9 @@ def test_display_math_is_a_break():
 
 def test_lorem_excluded():
     man = extract(
-        wrap("Lorem ipsum dolor sit amet consectetur adipiscing elit here. Real sentence here.")
+        wrap(
+            "Lorem ipsum dolor sit amet consectetur adipiscing elit here. Real sentence here."
+        )
     )
     reasons = {r.excluded_reason for r in man.records if not r.in_scope}
     assert "placeholder_lorem" in reasons
@@ -88,13 +94,17 @@ def test_footnote_becomes_own_record_and_parent_excluded():
     man = extract(wrap(body))
     kinds = {r.kind for r in man.records}
     assert "footnote" in kinds
-    parent = next(r for r in man.records if r.kind != "footnote" and "Everything else" in r.text)
+    parent = next(
+        r for r in man.records if r.kind != "footnote" and "Everything else" in r.text
+    )
     assert parent.contains_footnote is True
     assert parent.in_scope is False
 
 
 def test_section_title_not_a_sentence():
-    man = extract(wrap("\\section{Introduction}\n\nA real sentence here. Another one here."))
+    man = extract(
+        wrap("\\section{Introduction}\n\nA real sentence here. Another one here.")
+    )
     texts = [r.text for r in man.records if r.in_scope]
     assert "Introduction" not in texts
     assert "A real sentence here." in texts

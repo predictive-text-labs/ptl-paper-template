@@ -1,17 +1,20 @@
 # rewrite_pipeline
 
-Shortens the sentences of `Is_It_Priced_In.tex` to lower reading complexity, in
-four stages. Gemini proposes shorter rewrites; **Claude Fable** answers one
-question per rewrite — *does it keep all the important details of the original?*
-— and keeps it on yes; accepted rewrites are spliced back byte-precisely for
+Shortens the sentences of `Is_It_Priced_In.tex` to lower reading complexity.
+Gemini proposes shorter rewrites; **Claude Fable** answers one question per
+rewrite — *does it keep all the important details of the original?* — and keeps
+it on yes; a second Fable sweep re-reads every changed paragraph whole for
+cross-sentence coherence; accepted rewrites are spliced back byte-precisely for
 review.
 
 ```
-extract   paper.tex            → run/sentence_index.json   (deterministic Python)
-fanout    in-scope sentences   → run/gemini_out.json       (async Gemini 3.1 Pro)
-split     gemini_out.json      → run/judge_batches/*.json  (one sentence pair / file)
-judge     batch files          → run/accepted.json         (Claude Fable, Workflow tool)
-apply     accepted + manifest  → sidecar + diff + review   (deterministic Python)
+extract    paper.tex            → run/sentence_index.json    (deterministic Python)
+fanout     in-scope sentences   → run/gemini_out.json        (async Gemini 3.1 Pro)
+split      gemini_out.json      → run/judge_batches/*.json   (one sentence pair / file)
+judge      batch files          → run/accepted.json          (Claude Fable, Workflow tool)
+pairs      accepted + manifest  → run/coherence_pairs/*.json (deterministic Python)
+coherence  pair files           → run/coherence_fixes.json   (Claude Fable, Workflow tool)
+apply      accepted + fixes     → sidecar + diff + review    (deterministic Python)
 ```
 
 ## Setup
@@ -64,16 +67,35 @@ is enforced deterministically by `apply` (`reinsert.validate_rewrite`), not by
 the model. Accepted rewrites go to `run/accepted.json`, rejections to
 `run/rejected.json`.
 
-### 5. Apply (deterministic; review first)
+### 5. Coherence sweep (pre-apply gate; Claude triggers this)
+```bash
+uv run rewrite pairs             # builds run/coherence_pairs/pair_NNN.json
+```
+Per-sentence judging is structurally blind to seam damage: a rewrite that is
+faithful on its own can orphan a pro-verb in the *neighbouring* sentence
+("…does not alter the result. However, X, Y, and Z still **do**" → the rewrite
+says "irrelevant" and "still do" loses its verb), strand a demonstrative, drop
+an enumeration's labels a later sentence still cites, or break a "However"
+contrast. `pairs` virtually applies the accepted set (nothing written) and
+emits every changed paragraph as an old/new pair; the
+`coherence-sweep.workflow.mjs` Fable workflow reads each pair whole and
+returns minimal verbatim fixes, saved to `run/coherence_fixes.json`. The file
+is fingerprinted to the exact accepted set, so a stale sign-off can't gate a
+different apply.
+
+### 6. Apply (deterministic; review first)
 ```bash
 uv run rewrite apply             # dry run: sidecar + unified diff + review.html
 uv run rewrite apply --apply     # writes the .tex, runs the latexmk compile gate
 ```
 Dry run changes nothing — it writes `Is_It_Priced_In.rewritten.tex`,
 `run/rewrite.diff`, and `run/review.html` (side-by-side, word-count deltas).
-`--apply` refuses on a dirty `.tex` (commit/stash first, or `--force`), then
-splices in descending-offset order, and compiles; on any compile failure it
-reverts. Revert manually with `git checkout -- Is_It_Priced_In.tex`.
+`--apply` requires a fresh coherence sign-off (`--skip-coherence` to override),
+refuses on a dirty `.tex` (commit/stash first, or `--force`), then splices in
+descending-offset order — sentence rewrites first, then coherence fixes, each
+of which must match the text exactly once and preserve Class-A LaTeX tokens —
+and compiles; on any compile failure it reverts. Revert manually with
+`git checkout -- Is_It_Priced_In.tex`.
 
 ## Safety model
 
@@ -84,6 +106,9 @@ reverts. Revert manually with `git checkout -- Is_It_Priced_In.tex`.
 - **Rewrite validation**: single line, `$`/brace balance preserved, immutable
   LaTeX tokens (math, `\ref`/`\citep`, escaped literals) preserved, no block
   structures, terminal punctuation — before anything is spliced.
+- **Coherence gate**: `--apply` refuses without a `coherence_fixes.json`
+  fingerprinted to the current accepted set; each fix must match exactly once
+  (never fuzzy, never ambiguous) and preserve the Class-A token multiset.
 - **Integrity**: paragraph (blank-line) count unchanged, `\begin`/`\end`/`\[`/`\]`
   conserved, then a real `latexmk` compile with revert-on-failure.
 
@@ -95,9 +120,11 @@ src/rewrite_pipeline/
   extract.py     containers + sentence segmentation + scope filter → manifest
   gemini_fanout.py  async Gemini 3.1 Pro fan-out (all at once; timeout + infinite retry)
   reinsert.py    verification-first splice + LaTeX-token preservation gate
+  coherence.py   cross-sentence gate: paragraph pairs + verbatim fix application
   integrity.py   balance/blank-line invariants + latexmk compile gate
   review.py      side-by-side HTML review artifact
-  cli.py         extract / fanout / split / apply
+  cli.py         extract / fanout / split / pairs / apply
 judge-rewrites.workflow.mjs   Stage-B Fable judge (one pair per agent, Workflow tool)
+coherence-sweep.workflow.mjs  pre-apply seam check (one paragraph per agent)
 tests/           scanner/extractor round-trip + reinsert/integrity unit tests
 ```

@@ -140,3 +140,16 @@ judge-rewrites.workflow.mjs   Stage-B Fable judge (one pair per agent, Workflow 
 coherence-sweep.workflow.mjs  pre-apply seam check (one paragraph per agent)
 tests/           scanner/extractor round-trip + reinsert/integrity unit tests
 ```
+
+## Writing a new workflow script
+
+Start every `*.workflow.mjs` in this directory by normalising `args`:
+
+```js
+const A = typeof args === 'string' ? JSON.parse(args) : args || {}
+```
+
+Depending on the host, `args` arrives either already parsed or as a JSON string —
+even when the caller passed a real object. Without this line, `A.some_array` is
+`undefined` and the script dies on the first `pipeline()`/`map()` call before
+spawning a single agent. All four scripts here do it; a fifth one must too.

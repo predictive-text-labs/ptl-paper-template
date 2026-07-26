@@ -185,7 +185,7 @@ def cmd_pairs(args: argparse.Namespace) -> int:
 
     accepted_path = Path(args.accepted) if args.accepted else workdir / "accepted.json"
     accepted = _load_accepted(accepted_path)
-    new_text, applied, _skipped = apply_rewrites(text, man, accepted)
+    new_text, applied, skipped = apply_rewrites(text, man, accepted)
     pairs = build_pairs(text, new_text)
 
     outdir = workdir / "coherence_pairs"
@@ -212,6 +212,20 @@ def cmd_pairs(args: argparse.Namespace) -> int:
         f"pairs: {len(applied)} accepted rewrites touch {len(pairs)} paragraphs "
         f"-> {outdir}"
     )
+    # A judge-accepted rewrite that the deterministic gate then rejects is the
+    # one number a reader will otherwise try to reconcile by hand ("why 495 of
+    # 496?"), and a silent drop is exactly what this pipeline exists to prevent.
+    # Name each one and why, here rather than only at apply time.
+    if skipped:
+        from collections import Counter
+
+        by_reason = Counter(s.reason for s in skipped)
+        print(
+            f"  {len(skipped)} accepted rewrite(s) rejected by the LaTeX gate: "
+            f"{dict(by_reason)}"
+        )
+        for s in skipped:
+            print(f"    {s.id}: {s.reason}")
     print("  run coherence-sweep.workflow.mjs with args:")
     print(f"  {json.dumps(manifest)}")
     print(f"  then save its full return value to {workdir / 'coherence_fixes.json'}")

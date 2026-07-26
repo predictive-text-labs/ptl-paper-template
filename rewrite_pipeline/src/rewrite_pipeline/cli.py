@@ -65,7 +65,7 @@ def _git_commit() -> str | None:
             check=False,
         )
         return out.stdout.strip() or None
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
 
 
@@ -343,9 +343,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
     print(
         f"  compiled OK ({'pages=' + str(pages) if pages else 'page count unknown'})."
     )
-    print(
-        f"  review `git diff {tex.name}`; revert with `git checkout -- {tex.name}`."
-    )
+    print(f"  review `git diff {tex.name}`; revert with `git checkout -- {tex.name}`.")
     return 0
 
 
@@ -360,7 +358,7 @@ def _tex_dirty(tex: Path) -> bool:
             check=False,
         )
         return bool(out.stdout.strip())
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return False
 
 
@@ -425,6 +423,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Every stage reports progress on stdout, which Python block-buffers as soon
+    # as it is not a TTY — so piping to a log or running as a background task
+    # would otherwise swallow the whole run's output until exit and make a long
+    # stage look like a hang. Line buffering makes each print land immediately.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(line_buffering=True)
+        except OSError, ValueError:  # pragma: no cover - detached/odd stdout
+            pass
     args = build_parser().parse_args(argv)
     return args.func(args)
 

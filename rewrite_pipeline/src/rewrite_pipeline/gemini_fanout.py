@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +50,19 @@ RETRY_DELAY_S = 2.0
 # independent stalls in a row) — retry hard (20x), then give up and record
 # status="timeout" so the run can always finish.
 MAX_TIMEOUTS = 20
+# The real ceiling on "fire everything at once" is NOT the account rate limit
+# (22K RPM / 28M TPM) or the fd limit (~1M soft) — it is httpx's own connection
+# pool, which defaults to max_connections=100. Above that, every extra call
+# blocks in pool acquisition; a queued call that hits REQUEST_TIMEOUT_S is then
+# cancelled *mid-acquire* and does not reliably hand its slot back, so the pool
+# bleeds slots into CLOSE_WAIT until every worker is parked on a pool that can
+# never refill — a permanent hang with 0 sockets in flight. Sizing the pool
+# above the job means nothing ever queues, so there is no cancel-during-acquire
+# to leak in the first place.
+MAX_CONNECTIONS = 1500
+# Progress is reprinted at least this often even when nothing completes, so a
+# stalled run looks stalled instead of looking like a silent hang.
+HEARTBEAT_S = 15.0
 
 
 @dataclass
@@ -73,6 +87,28 @@ class GeminiRecord:
             "context_after": self.context_after,
             "attempts": self.attempts,
         }
+
+
+@dataclass
+class _Stats:
+    """Live fan-out counters, shared by every worker and the progress printer."""
+
+    total: int
+    done: int = 0
+    ok: int = 0
+    inflight: int = 0
+    retries: int = 0
+    timeouts: int = 0
+
+    def line(self, elapsed: float) -> str:
+        bad = self.done - self.ok
+        return (
+            f"[fanout] {self.done}/{self.total} done"
+            f" | {self.ok} ok, {bad} failed"
+            f" | {self.inflight} in flight"
+            f" | {self.retries} retries, {self.timeouts} timeouts"
+            f" | {elapsed:.0f}s"
+        )
 
 
 def load_env(env_path: Path | None = None) -> None:
@@ -136,6 +172,7 @@ async def _call_one(
     rec: Record,
     ctx: tuple[str, str],
     model: str,
+    stats: _Stats | None = None,
 ) -> GeminiRecord:
     from google.genai import errors as gerrors
 
@@ -181,6 +218,8 @@ async def _call_one(
             # A stalled response. Retry hard, but give up after MAX_TIMEOUTS so
             # one cursed sentence can't stall the whole run.
             timeouts += 1
+            if stats is not None:
+                stats.timeouts += 1
             if timeouts >= MAX_TIMEOUTS:
                 return record("timeout", None, attempt)
         except gerrors.APIError as e:
@@ -191,6 +230,8 @@ async def _call_one(
             # 429 / 5xx / everything else: retry forever.
         except transient_http:
             pass  # network blip: retry forever.
+        if stats is not None:
+            stats.retries += 1
         await asyncio.sleep(RETRY_DELAY_S)
 
 
@@ -222,16 +263,37 @@ def preflight(client, model: str = MODEL) -> bool:
     return ok
 
 
+def make_client(max_connections: int = MAX_CONNECTIONS):
+    """A genai client whose httpx pool is sized above the whole job.
+
+    Without this the pool caps at 100 and the fan-out deadlocks (see
+    ``MAX_CONNECTIONS``). ``google-genai`` only uses aiohttp when it is
+    installed; the default async path is ``httpx.AsyncClient``, so the pool is
+    set through ``async_client_args``.
+    """
+    import httpx
+    from google import genai
+    from google.genai import types
+
+    limits = httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=max_connections,
+    )
+    # reads GEMINI_API_KEY / GOOGLE_API_KEY
+    return genai.Client(
+        http_options=types.HttpOptions(async_client_args={"limits": limits})
+    )
+
+
 async def fanout(
     records: list[Record],
     all_records: list[Record],
     *,
     model: str = MODEL,
 ) -> list[GeminiRecord]:
-    from google import genai
     from google.genai import types
 
-    client = genai.Client()  # reads GEMINI_API_KEY / GOOGLE_API_KEY
+    client = make_client()
     preflight(client, model)
 
     cfg = types.GenerateContentConfig(
@@ -241,20 +303,44 @@ async def fanout(
     )
     ctx = _neighbors(all_records)
 
-    done = 0
-    total = len(records)
+    stats = _Stats(total=len(records))
     results: list[GeminiRecord] = []
+    started = time.monotonic()
+
+    def emit() -> None:
+        # flush=True is load-bearing: stdout is block-buffered whenever it is
+        # not a TTY (a pipe, a log file, a background task), so an unflushed
+        # print can sit in an 8 KB buffer for the entire run and appear only at
+        # exit — which is indistinguishable from a hang.
+        print(stats.line(time.monotonic() - started), flush=True)
+
+    async def heartbeat() -> None:
+        while True:
+            await asyncio.sleep(HEARTBEAT_S)
+            emit()
 
     async def worker(rec: Record) -> None:
-        nonlocal done
-        gr = await _call_one(client, cfg, rec, ctx.get(rec.id, ("", "")), model)
+        stats.inflight += 1
+        try:
+            gr = await _call_one(
+                client, cfg, rec, ctx.get(rec.id, ("", "")), model, stats
+            )
+        finally:
+            stats.inflight -= 1
         results.append(gr)
-        done += 1
-        if done % 25 == 0 or done == total:
-            print(f"[fanout] {done}/{total} done")
+        stats.done += 1
+        if gr.status == "ok":
+            stats.ok += 1
+        if stats.done % 25 == 0 or stats.done == stats.total:
+            emit()
 
     # Every sentence in flight at once — no stagger, no semaphore.
-    await asyncio.gather(*(worker(r) for r in records))
+    emit()
+    beat = asyncio.create_task(heartbeat())
+    try:
+        await asyncio.gather(*(worker(r) for r in records))
+    finally:
+        beat.cancel()
     return results
 
 
@@ -271,7 +357,11 @@ def run(
             "GEMINI_API_KEY not found. Put it in .env (GEMINI_API_KEY=...)."
         )
     in_scope = [r for r in manifest.records if r.in_scope]
-    print(f"[fanout] {len(in_scope)} in-scope sentences → {model}")
+    print(
+        f"[fanout] {len(in_scope)} in-scope sentences → {model} "
+        f"(pool={MAX_CONNECTIONS}, timeout={REQUEST_TIMEOUT_S:.0f}s)",
+        flush=True,
+    )
     results = asyncio.run(fanout(in_scope, manifest.records, model=model))
     results.sort(key=lambda g: g.id)
     out_path.write_text(
@@ -279,5 +369,10 @@ def run(
         encoding="utf-8",
     )
     ok = sum(1 for g in results if g.status == "ok")
-    print(f"[fanout] wrote {out_path}  (ok={ok}/{len(results)})")
+    if ok != len(results):
+        from collections import Counter
+
+        bad = Counter(g.status for g in results if g.status != "ok")
+        print(f"[fanout] non-ok statuses: {dict(bad)}", flush=True)
+    print(f"[fanout] wrote {out_path}  (ok={ok}/{len(results)})", flush=True)
     return results

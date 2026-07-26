@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rewrite_pipeline.extract import extract
+from rewrite_pipeline.extract import _unterminated_in_scope, extract
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -147,7 +147,9 @@ def test_literal_percent_in_verb_does_not_hide_env_end():
 def test_verbatim_commented_end_still_closes():
     # Inside verbatim, % is a literal character, so TeX ends the environment at
     # the \end token even on a % line — the scanner must match that.
-    body = "\\begin{verbatim}\n% \\end{verbatim}\nAfter text goes here now. Next one here."
+    body = (
+        "\\begin{verbatim}\n% \\end{verbatim}\nAfter text goes here now. Next one here."
+    )
     man = extract(wrap(body))
     texts = [r.text for r in man.records if r.in_scope]
     assert "After text goes here now." in texts
@@ -172,4 +174,57 @@ def test_repo_paper_roundtrip_and_scope():
                     assert r.abs_start < ap  # no in-scope sentence past the appendix
                 assert r.n_dollars % 2 == 0
                 assert r.n_brace_delta == 0
-                assert r.has_terminal
+                # Terminal punctuation is required, except for the two shapes
+                # that are complete units without it (';' list item, caption
+                # title) — see extract._unterminated_in_scope.
+                assert r.has_terminal or _unterminated_in_scope(r.kind, r.text)
+
+
+ITEMS_AND_TITLE = r"""A lab must recover three classes of expenditure:
+
+\begin{itemize}
+\item the direct cost of serving inference;
+\item the fixed cost of training, safety work, and model development;
+\end{itemize}
+
+\begin{table}
+\caption{Observed evidence and present status}
+\end{table}
+
+The correct unit is:
+\[ x = 1 \]
+"""
+
+
+def _by_text(body: str, substr: str):
+    man = extract(wrap(body))
+    return next(r for r in man.records if substr in r.text)
+
+
+def test_semicolon_list_items_are_in_scope():
+    """Each ``\\item`` is its own unit; ';' terminates it inside a series."""
+    rec = _by_text(ITEMS_AND_TITLE, "direct cost of serving")
+    assert rec.kind == "list-item"
+    assert rec.in_scope and not rec.has_terminal
+
+
+def test_bare_caption_title_is_in_scope():
+    """Table and figure titles conventionally carry no full stop."""
+    rec = _by_text(ITEMS_AND_TITLE, "Observed evidence")
+    assert rec.kind == "caption"
+    assert rec.in_scope and not rec.has_terminal
+
+
+def test_colon_lead_in_stays_excluded():
+    """A colon lead-in is welded to the display math after it — never rewritten."""
+    for substr in ("three classes of expenditure", "The correct unit is"):
+        rec = _by_text(ITEMS_AND_TITLE, substr)
+        assert rec.kind == "body"
+        assert not rec.in_scope and rec.excluded_reason == "no_terminal"
+
+
+def test_latex_plumbing_stays_excluded():
+    """A tabular column spec has no terminal and must never reach a rewriter."""
+    body = "\\begin{tabular}\n{L{0.17\\textwidth} L{0.22\\textwidth}}\n\\end{tabular}\n"
+    man = extract(wrap(body))
+    assert not any(r.in_scope and "textwidth" in r.text for r in man.records)

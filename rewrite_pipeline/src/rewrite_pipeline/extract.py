@@ -112,6 +112,25 @@ def _is_lorem(t: str) -> bool:
     return hits >= 3 or (hits >= 2 and hits / len(words) > 0.4)
 
 
+def _unterminated_in_scope(kind: str, t: str) -> bool:
+    """Is a span carrying no ``.``/``?``/``!`` still a complete, rewritable unit?
+
+    Most unterminated spans are artefacts and must stay out of scope: tabular
+    column specs (``{L{0.17\\textwidth} ...}``), ``\\centering``/``\\input``
+    lines, and colon lead-ins ("The correct unit is:") that are welded to the
+    display math following them. Two shapes are genuine prose:
+
+    * a **list item ending in ``;``** — each ``\\item`` is its own unit, and the
+      semicolon terminates it inside an enumerated series;
+    * a **caption** — table and figure titles conventionally carry no full stop.
+
+    Anything else without a terminal stays excluded as ``no_terminal``.
+    """
+    if kind == "list-item":
+        return t.rstrip().endswith(";")
+    return kind == "caption"
+
+
 # Trailing tokens that abbreviate rather than end a sentence.
 ABBREV = frozenset(
     {
@@ -388,7 +407,7 @@ def extract(
             reason = "appendix"
         elif kind not in ("abstract", "body", "caption", "footnote", "list-item"):
             reason = "out_of_kind"
-        elif not ht:
+        elif not ht and not _unterminated_in_scope(kind, t):
             reason = "no_terminal"
         elif contains_footnote:
             reason = "contains_footnote"

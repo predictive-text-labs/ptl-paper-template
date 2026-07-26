@@ -93,6 +93,24 @@ def _trailing_terminal(s: str) -> str:
     return ""
 
 
+def _clause_end(s: str) -> str:
+    """The trailing ``;`` of an unterminated list item, else ``""`` (a title)."""
+    return ";" if s.rstrip().endswith(";") else ""
+
+
+def _force_clause_end(s: str, want: str) -> str:
+    """End ``s`` exactly as the unterminated original did.
+
+    A rewrite of a bare caption title or a ``;``-terminated list item routinely
+    comes back with a full stop the original never had — that is a style change,
+    not a shortening. Normalise the single trailing ``.``/``;`` rather than
+    rejecting an otherwise good rewrite."""
+    t = s.rstrip()
+    if t and t[-1] in ".;":
+        t = t[:-1].rstrip()
+    return t + want
+
+
 def _norm(s: str) -> str:
     return " ".join(s.split())
 
@@ -113,12 +131,21 @@ def validate_rewrite(
         return None, "brace_imbalance"
     if _class_a_tokens(rw) != _class_a_tokens(original):
         return None, "latex_token_drift"
-    if not _ends_terminal(rw):
-        term = _trailing_terminal(original)
-        if term:
-            rw = rw + term
-    if not _ends_terminal(rw):
-        return None, "no_terminal"
+    if rec.has_terminal:
+        if not _ends_terminal(rw):
+            term = _trailing_terminal(original)
+            if term:
+                rw = rw + term
+        if not _ends_terminal(rw):
+            return None, "no_terminal"
+    else:
+        # In-scope spans that never carried a . ? ! — a ';'-terminated list item
+        # or a bare caption title (see extract._unterminated_in_scope) — must
+        # KEEP that shape, so hold the rewrite to the original's ending instead
+        # of demanding a terminal it never had.
+        rw = _force_clause_end(rw, _clause_end(original))
+        if not rw:
+            return None, "empty"
     if _norm(rw) == _norm(original):
         return None, "noop"
     return rw, None

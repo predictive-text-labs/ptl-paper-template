@@ -55,9 +55,7 @@ def test_validate_allows_escaped_percent():
     # \% is a literal percent sign, not a comment: a rewrite that keeps it must
     # pass, an unescaped % (comments out the rest of the line) must not, and
     # dropping the \% is token drift.
-    _, rec = _record(
-        wrap("Roughly 50\\% of runs fail here now. Next one here."), "50"
-    )
+    _, rec = _record(wrap("Roughly 50\\% of runs fail here now. Next one here."), "50")
     rw, err = validate_rewrite(rec.text, "About 50\\% of runs fail.", rec)
     assert err is None and rw is not None
     rw, err = validate_rewrite(rec.text, "About 50 % of runs fail.", rec)
@@ -107,6 +105,47 @@ def test_validate_reappends_terminal():
     rw, err = validate_rewrite(rec.text, "A short sentence", rec)
     assert err is None
     assert rw.endswith(".")
+
+
+LIST_AND_CAPTION = (
+    "\\begin{itemize}\n"
+    "\\item the fixed cost of training, safety work, and model development;\n"
+    "\\end{itemize}\n\n"
+    "\\begin{table}\n\\caption{Observed evidence and present status}\n\\end{table}\n"
+)
+
+
+def test_validate_keeps_semicolon_on_list_item():
+    """A ';' list item keeps its ';' whether the rewrite supplies one or not."""
+    _, rec = _record(wrap(LIST_AND_CAPTION), "fixed cost of training")
+    assert not rec.has_terminal
+    for candidate in ("training and safety work", "training and safety work;"):
+        rw, err = validate_rewrite(rec.text, candidate, rec)
+        assert err is None, (candidate, err)
+        assert rw.endswith(";") and not rw.endswith(".;")
+
+
+def test_validate_strips_added_full_stop_from_list_item():
+    """A rewrite that acquires a full stop is normalised back to the ';'."""
+    _, rec = _record(wrap(LIST_AND_CAPTION), "fixed cost of training")
+    rw, err = validate_rewrite(rec.text, "training and safety work.", rec)
+    assert err is None
+    assert rw == "training and safety work;"
+
+
+def test_validate_keeps_caption_title_unpunctuated():
+    """A bare title must not acquire a full stop — that is a style edit."""
+    _, rec = _record(wrap(LIST_AND_CAPTION), "Observed evidence")
+    assert not rec.has_terminal
+    rw, err = validate_rewrite(rec.text, "Evidence and current status.", rec)
+    assert err is None
+    assert rw == "Evidence and current status"
+
+
+def test_validate_still_noops_an_unchanged_list_item():
+    """The noop guard survives the clause-ending normalisation."""
+    _, rec = _record(wrap(LIST_AND_CAPTION), "fixed cost of training")
+    assert validate_rewrite(rec.text, rec.text, rec)[1] == "noop"
 
 
 def test_apply_descending_offsets_are_correct():

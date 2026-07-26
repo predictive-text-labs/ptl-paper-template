@@ -11,7 +11,7 @@ review.
 
 ```
 extract    paper.tex            → run/sentence_index.json    (deterministic Python)
-fanout     in-scope sentences   → run/gemini_out.json        (async Gemini 3.1 Pro)
+fanout     in-scope sentences   → run/gemini_out.json        (async Gemini 3.6 Flash)
 split      gemini_out.json      → run/judge_batches/*.json   (one sentence pair / file)
 judge      batch files          → run/accepted.json          (Claude Fable, Workflow tool)
 pairs      accepted + manifest  → run/coherence_pairs/*.json (deterministic Python)
@@ -43,13 +43,23 @@ and exclusion reasons (incl. lorem-ipsum placeholder sentences).
 
 ### 2. Fan out to Gemini (needs the key)
 ```bash
-uv run rewrite fanout           # gemini-3.1-pro-preview, ~250 in-scope sentences
+uv run rewrite fanout           # gemini-3.6-flash at thinking_level=high
 ```
 Sends each sentence the *verbatim* prompt, **all at once** — no stagger, no
-concurrency cap. Gemini 3.1 Pro's limits (22K RPM / 28M TPM) dwarf this ~250-call
-job, so the only load-bearing parts are (a) a per-call **timeout** that turns a
-stalled HTTP response into a retry, and (b) **infinite retry** on any error (with
-a bounded give-up after 20 timeouts so one cursed sentence can't stall the run).
+concurrency cap. The account limits (22K RPM / 28M TPM) dwarf the job, and a
+950-call burst was measured drawing zero 429s and zero 503s, so staggering buys
+nothing and only delays the last call. Three parts are load-bearing:
+
+* an httpx pool sized **above** the job (`MAX_CONNECTIONS`). The default of 100
+  deadlocks a larger fan-out outright — calls queue, a queued call cancelled
+  mid-acquire leaks its slot, and the pool bleeds into `CLOSE_WAIT`.
+* **hedging** (`HEDGE_AFTER_S`). A stalled HTTP response never errors and never
+  returns, so elapsed time is the only detector — but a slow call looks identical
+  until one answers. Once a copy is 120s old a *duplicate* is raced against it
+  and the first answer wins, instead of killing a copy that may only be queued.
+* **infinite retry** on any error, bounded by one hard `CALL_DEADLINE_S` per
+  sentence, so a cursed sentence lands `status="timeout"` instead of stalling
+  the run. 400/401/403/404 are terminal and never retried.
 Measured: 252/252 in ~2.5 min at high thinking. Writes `run/gemini_out.json`.
 
 ### 3. Split into per-judge batches (deterministic)
@@ -120,7 +130,7 @@ and compiles; on any compile failure it reverts. Revert manually with
 src/rewrite_pipeline/
   scanner.py     masking scanner (math, comments, envs, cmd args, style wrappers)
   extract.py     containers + sentence segmentation + scope filter → manifest
-  gemini_fanout.py  async Gemini 3.1 Pro fan-out (all at once; timeout + infinite retry)
+  gemini_fanout.py  async Gemini fan-out (all at once; hedged + infinite retry)
   reinsert.py    verification-first splice + LaTeX-token preservation gate
   coherence.py   cross-sentence gate: paragraph pairs + verbatim fix application
   integrity.py   balance/blank-line invariants + latexmk compile gate

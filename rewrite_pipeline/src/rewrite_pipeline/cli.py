@@ -374,7 +374,11 @@ def build_parser() -> argparse.ArgumentParser:
     pf = sub.add_parser(
         "fanout", help="send in-scope sentences to Gemini (all at once)"
     )
-    pf.add_argument("--model", default="gemini-3.1-pro-preview")
+    # Default from the one source of truth, so bumping the model is a one-line
+    # change in gemini_fanout instead of a silent mismatch with this flag.
+    from .gemini_fanout import MODEL as FANOUT_MODEL
+
+    pf.add_argument("--model", default=FANOUT_MODEL)
     pf.add_argument("--env", default=None, help="path to .env (default: search upward)")
     pf.set_defaults(func=cmd_fanout)
 

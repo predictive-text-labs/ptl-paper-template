@@ -1,6 +1,6 @@
 """Gemini fan-out — fire every sentence at once.
 
-Sends each in-scope sentence to ``gemini-3.1-pro-preview`` with the *verbatim*
+Sends each in-scope sentence to ``gemini-3.6-flash`` with the *verbatim*
 rewrite prompt (no system instruction — faithful to "just this single prompt and
 just this single sentence"). Extraction of a clean snippet from the raw response
 is deferred to the Claude judging stage.
@@ -43,14 +43,16 @@ PROMPT_TEMPLATE = (
     "{sentence}"
 )
 
-MODEL = "gemini-3.1-pro-preview"
+MODEL = "gemini-3.6-flash"
 TERMINAL_CODES = frozenset({400, 401, 403, 404})
 # How long one copy of a call may be outstanding before a duplicate is raced
 # against it. Measured, not guessed: a burst this deep drains steadily out to
-# ~111s (in the 950-sentence reference run, 802 done by 75s and 900 by 111s), so
-# a tighter trigger would hedge calls that are merely queued — 16% of them at
-# 75s. Past ~120s a call is a genuine outlier: 96% of the reference run answered
-# on the first copy, so hedging stays cheap.
+# ~111s (in a 950-sentence reference run, 802 done by 75s and 900 by 111s), so a
+# tighter trigger would hedge calls that are merely queued — 16% of them at 75s.
+# Past ~120s a call is a genuine outlier: 96% of that run answered on the first
+# copy, so hedging stays cheap. Those numbers come from gemini-3.1-pro-preview;
+# they are a ceiling for the Flash default, which is faster per call at the same
+# thinking_level, so the trigger stays conservative rather than needing a re-tune.
 HEDGE_AFTER_S = 120.0
 # Ceiling on concurrent copies of ONE logical call, so a pathological sentence
 # cannot fan out without bound.
@@ -349,8 +351,10 @@ async def fanout(
     preflight(client, model)
 
     cfg = types.GenerateContentConfig(
-        # Gemini 3 Pro reasons at the highest setting; output budget left unset
-        # so it uses the model's full maximum (thinking tokens draw from it).
+        # Reason at the highest setting; output budget left unset so it uses the
+        # model's full maximum (thinking tokens draw from it). "high" is a real
+        # budget on Flash, not an ignored field: measured at 8425 thinking
+        # tokens vs 985 for "low" on the same sentence.
         thinking_config=types.ThinkingConfig(thinking_level="high"),
     )
     ctx = _neighbors(all_records)

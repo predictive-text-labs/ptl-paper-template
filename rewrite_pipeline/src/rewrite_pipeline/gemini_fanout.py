@@ -6,17 +6,23 @@ just this single sentence"). Extraction of a clean snippet from the raw response
 is deferred to the Claude judging stage.
 
 Dispatch is dead simple, because the account limits (22K RPM / 28M TPM) and the
-fd limit (~1M) dwarf a ~250-call job: fire all sentences concurrently, no
-stagger, no semaphore. Only two things are load-bearing:
-  * a per-call wall-clock timeout. The one real failure mode is a STALLED HTTP
-    response — the request is accepted but the server never returns and never
-    errors, so httpx waits on a dead socket forever. "Retry on error" can't fix
-    that (there is no error); the timeout is what turns a hang into a retry.
-  * infinite retry on any error (a stall is random per-connection, so a retry on
-    a fresh socket almost always works), with a bounded give-up on repeated
-    timeouts so one cursed sentence can't stall the whole run. 400/401/403/404
-    are terminal (bad request / auth / missing model — never transient, so a
-    retry loop would hang every worker).
+fd limit (~1M) dwarf the job: fire all sentences concurrently, no stagger, no
+semaphore. Staggering was measured and rejected — a 950-call instantaneous burst
+drew zero 429s and zero 503s, so there is no server-side pushback to pace away,
+and a 0.1s stagger would add ~95s to the floor before the last call even starts.
+Only two things are load-bearing:
+  * a per-copy hedge timer. The one real failure mode is a STALLED HTTP response
+    — the request is accepted but the server never returns and never errors, so
+    httpx waits on a dead socket forever. "Retry on error" cannot fix that
+    (there is no error), and elapsed time is the only available detector. But a
+    slow call and a stalled call look identical until one of them answers, so
+    instead of killing a slow copy and starting from zero, a DUPLICATE is raced
+    against it and the first answer wins: a stall is per-connection, so a fresh
+    socket almost always works, while the original stays alive in case it was
+    merely queued.
+  * infinite retry on any error, bounded by one hard per-call deadline.
+    400/401/403/404 are terminal (bad request / auth / missing model — never
+    transient, so a retry loop would hang every worker).
 """
 
 from __future__ import annotations
@@ -39,21 +45,30 @@ PROMPT_TEMPLATE = (
 
 MODEL = "gemini-3.1-pro-preview"
 TERMINAL_CODES = frozenset({400, 401, 403, 404})
-# A single call is aborted after this long. Legit high-thinking calls run up to
-# ~55s under load, so this is generous headroom — anything longer is a stall.
-REQUEST_TIMEOUT_S = 120.0
-# Brief pause before retrying a failed call (limits are effectively unlimited, so
-# this only paces retries; a 503 "high load" wants a moment for the model to
+# How long one copy of a call may be outstanding before a duplicate is raced
+# against it. Measured, not guessed: a burst this deep drains steadily out to
+# ~111s (in the 950-sentence reference run, 802 done by 75s and 900 by 111s), so
+# a tighter trigger would hedge calls that are merely queued — 16% of them at
+# 75s. Past ~120s a call is a genuine outlier: 96% of the reference run answered
+# on the first copy, so hedging stays cheap.
+HEDGE_AFTER_S = 120.0
+# Ceiling on concurrent copies of ONE logical call, so a pathological sentence
+# cannot fan out without bound.
+MAX_HEDGES = 4
+# Brief pause before replacing a failed call (limits are effectively unlimited,
+# so this only paces retries; a 503 "high load" wants a moment for the model to
 # recover before the next attempt).
 RETRY_DELAY_S = 2.0
-# Errors retry forever; a call that keeps *timing out* is rare (needs many
-# independent stalls in a row) — retry hard (20x), then give up and record
-# status="timeout" so the run can always finish.
-MAX_TIMEOUTS = 20
+# Hard give-up for one logical call — all copies — after which the record lands
+# as status="timeout" so the run can always finish. This replaces a per-attempt
+# timeout cap, which multiplied the wall clock (20 attempts x 120s = 40 min for
+# a single cursed sentence) precisely because each attempt discarded a copy that
+# might still have answered.
+CALL_DEADLINE_S = 600.0
 # The real ceiling on "fire everything at once" is NOT the account rate limit
 # (22K RPM / 28M TPM) or the fd limit (~1M soft) — it is httpx's own connection
 # pool, which defaults to max_connections=100. Above that, every extra call
-# blocks in pool acquisition; a queued call that hits REQUEST_TIMEOUT_S is then
+# blocks in pool acquisition; a queued call that its caller then cancels is
 # cancelled *mid-acquire* and does not reliably hand its slot back, so the pool
 # bleeds slots into CLOSE_WAIT until every worker is parked on a pool that can
 # never refill — a permanent hang with 0 sockets in flight. Sizing the pool
@@ -98,6 +113,7 @@ class _Stats:
     ok: int = 0
     inflight: int = 0
     retries: int = 0
+    hedges: int = 0
     timeouts: int = 0
 
     def line(self, elapsed: float) -> str:
@@ -106,7 +122,7 @@ class _Stats:
             f"[fanout] {self.done}/{self.total} done"
             f" | {self.ok} ok, {bad} failed"
             f" | {self.inflight} in flight"
-            f" | {self.retries} retries, {self.timeouts} timeouts"
+            f" | {self.retries} retries, {self.hedges} hedged, {self.timeouts} timeouts"
             f" | {elapsed:.0f}s"
         )
 
@@ -202,37 +218,73 @@ async def _call_one(
         )
 
     attempt = 0
-    timeouts = 0
-    while True:
+    inflight: set[asyncio.Task] = set()
+    started = time.monotonic()
+
+    def spawn() -> None:
+        """Put one more copy of this call on the wire."""
+        nonlocal attempt
         attempt += 1
-        try:
-            resp = await asyncio.wait_for(
+        inflight.add(
+            asyncio.create_task(
                 client.aio.models.generate_content(
                     model=model, contents=prompt, config=cfg
-                ),
-                timeout=REQUEST_TIMEOUT_S,
+                )
             )
-            text, status = _extract_text(resp)
-            return record(status, text, attempt)
-        except TimeoutError:
-            # A stalled response. Retry hard, but give up after MAX_TIMEOUTS so
-            # one cursed sentence can't stall the whole run.
-            timeouts += 1
-            if stats is not None:
-                stats.timeouts += 1
-            if timeouts >= MAX_TIMEOUTS:
+        )
+
+    try:
+        spawn()
+        while True:
+            left = CALL_DEADLINE_S - (time.monotonic() - started)
+            if left <= 0:
+                if stats is not None:
+                    stats.timeouts += 1
                 return record("timeout", None, attempt)
-        except gerrors.APIError as e:
-            # ClientError (4xx) and ServerError (5xx) both subclass APIError.
-            code = getattr(e, "code", None)
-            if code in TERMINAL_CODES:
-                return record(f"terminal_{code}", None, attempt)
-            # 429 / 5xx / everything else: retry forever.
-        except transient_http:
-            pass  # network blip: retry forever.
-        if stats is not None:
-            stats.retries += 1
-        await asyncio.sleep(RETRY_DELAY_S)
+
+            # Wake on the first copy to answer, or when the next hedge is due.
+            done, _ = await asyncio.wait(
+                inflight,
+                timeout=min(HEDGE_AFTER_S, left),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in done:
+                inflight.discard(task)
+                exc = task.exception()
+                if exc is None:
+                    text, status = _extract_text(task.result())
+                    return record(status, text, attempt)
+                if isinstance(exc, gerrors.APIError):
+                    # ClientError (4xx) and ServerError (5xx) both subclass it.
+                    code = getattr(exc, "code", None)
+                    if code in TERMINAL_CODES:
+                        return record(f"terminal_{code}", None, attempt)
+                    # 429 / 5xx / everything else: retry forever.
+                elif not isinstance(exc, transient_http):
+                    raise exc  # a real bug, not a network condition
+                if stats is not None:
+                    stats.retries += 1
+
+            if not inflight:
+                # Every copy failed — pause, then start a fresh one.
+                await asyncio.sleep(min(RETRY_DELAY_S, left))
+                spawn()
+            elif not done and len(inflight) < MAX_HEDGES:
+                # Nobody answered within HEDGE_AFTER_S and the survivors may be
+                # stalled on dead sockets. Race a duplicate rather than killing
+                # them: whichever returns first wins, so a copy that was merely
+                # slow still counts.
+                if stats is not None:
+                    stats.hedges += 1
+                spawn()
+    finally:
+        # Losing copies must be cancelled AND awaited, or asyncio reports their
+        # results as never-retrieved once they eventually settle.
+        for task in inflight:
+            task.cancel()
+        if inflight:
+            await asyncio.gather(*inflight, return_exceptions=True)
 
 
 def preflight(client, model: str = MODEL) -> bool:
@@ -359,7 +411,8 @@ def run(
     in_scope = [r for r in manifest.records if r.in_scope]
     print(
         f"[fanout] {len(in_scope)} in-scope sentences → {model} "
-        f"(pool={MAX_CONNECTIONS}, timeout={REQUEST_TIMEOUT_S:.0f}s)",
+        f"(pool={MAX_CONNECTIONS}, hedge={HEDGE_AFTER_S:.0f}s"
+        f"×{MAX_HEDGES}, deadline={CALL_DEADLINE_S:.0f}s)",
         flush=True,
     )
     results = asyncio.run(fanout(in_scope, manifest.records, model=model))

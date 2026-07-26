@@ -351,10 +351,15 @@ async def fanout(
     preflight(client, model)
 
     cfg = types.GenerateContentConfig(
-        # Reason at the highest setting; output budget left unset so it uses the
-        # model's full maximum (thinking tokens draw from it). "high" is a real
-        # budget on Flash, not an ignored field: measured at 8425 thinking
-        # tokens vs 985 for "low" on the same sentence.
+        # thinking_level is an EFFORT dial (minimal/low/medium/high), not a token
+        # allowance: the model still spends dynamically inside it — the same call
+        # at "high" measured 6.6k / 8.1k / 11.7k thinking tokens on three
+        # identical tries. Asking for "high" is not redundant, because
+        # gemini-3.6-flash defaults to "medium": ~8.8k mean at high vs ~4.8k
+        # unset. Leave thinking_budget alone — it is the legacy numeric knob,
+        # deprecated for Gemini 3.x, and setting both is a hard 400 ("You can
+        # only set only one of thinking budget and thinking level"). No
+        # max_output_tokens either, so the model keeps its full ceiling.
         thinking_config=types.ThinkingConfig(thinking_level="high"),
     )
     ctx = _neighbors(all_records)
